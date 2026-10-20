@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+
+# 테스트용 데이터셋 (재배포 불가)
+/data/
+
+# 모델·데이터 파일: AI Hub 데이터셋 파생물이라 올리지 않음 (item-dimension-training으로 생성)
+app/data/*
+!app/data/README.md
+!app/data/*.example.json
