@@ -101,15 +101,16 @@ class Measurer:
 
         if score >= self.threshold:
             p = self.products[best]
-            status, kan_code, name, dims, size_type = "known", p["kan_code"], p["name"], p["dims_cm"], "measured"
+            # KAN 코드는 분류 코드라 상품 간 중복이 있어 식별자로 바코드를 내보낸다
+            status, barcode, name, dims, size_type = "known", str(p["barcode"]), p["name"], p["dims_cm"], "measured"
         else:
-            # 처음 보는 물건: 부피만 추정, KAN 코드·상품명은 null
-            status, kan_code, name, dims, size_type = "unknown", None, None, self.estimate_dims(shapes), "estimated"
+            # 처음 보는 물건: 부피만 추정, 바코드·상품명은 null
+            status, barcode, name, dims, size_type = "unknown", None, None, self.estimate_dims(shapes), "estimated"
 
         w, d, h = dims
         return {
             "status": status,
-            "kan_code": kan_code,
+            "barcode": barcode,
             "product_name": name,
             "size": {
                 "type": size_type,

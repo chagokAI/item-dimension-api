@@ -21,5 +21,5 @@ print(json.dumps(result, ensure_ascii=False, indent=2))
 label = images[0].replace("01.원천데이터", "02.라벨링데이터").removesuffix(".jpg") + ".json"
 at = json.load(open(label, encoding="utf-8"))["annotations"][0]["attributes"]
 dims = sorted([at["length"], at["width"], at["height"]], reverse=True)
-print(f"\n[라벨] {at['KAN_code']} {at['product_name']}  "
+print(f"\n[라벨] {at['barcode']} {at['product_name']}  "
       f"{dims[0]} x {dims[1]} x {dims[2]} = {dims[0] * dims[1] * dims[2]:,.1f}cm³")
