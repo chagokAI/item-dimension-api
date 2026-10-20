@@ -4,7 +4,7 @@ Inference server that identifies inbound items from 3 camera images and returns 
 
 고정 카메라 3대(cam1~3)로 찍은 입고 물품 사진을 받아서
 
-- **등록된 물품**이면 → KAN 코드, 상품명, **실측 치수**
+- **등록된 물품**이면 → 바코드, 상품명, **실측 치수**
 - **처음 보는 물품**이면 → **추정 치수**
 
 를 JSON으로 돌려주는 추론 서버입니다.
@@ -77,7 +77,7 @@ curl -X POST http://localhost:8000/measure \
 ```json
 {
   "status": "known",
-  "kan_code": "01010110",
+  "barcode": "8809251219122",
   "product_name": "오씨아니 딸기시럽 500g*12",
   "size": {"type": "measured", "w_cm": 21.4, "d_cm": 8.5, "h_cm": 4.3, "volume_cm3": 782.2}
 }
@@ -87,7 +87,7 @@ curl -X POST http://localhost:8000/measure \
 ```json
 {
   "status": "unknown",
-  "kan_code": null,
+  "barcode": null,
   "product_name": null,
   "size": {"type": "estimated", "w_cm": 26.2, "d_cm": 13.2, "h_cm": 2.9, "volume_cm3": 997.1}
 }
@@ -95,7 +95,7 @@ curl -X POST http://localhost:8000/measure \
 
 | 필드 | 등록 물품 (`known`) | 처음 보는 물품 (`unknown`) |
 |---|---|---|
-| `kan_code` | KAN 8자리 | `null` |
+| `barcode` | 상품 바코드 (KAN 코드는 분류 코드라 상품 간 중복이 있어 쓰지 않음) | `null` |
 | `product_name` | 상품명 | `null` |
 | `size.type` | `measured` (라벨 실측값) | `estimated` (모델 추정값) |
 | `size.w_cm` ≥ `d_cm` ≥ `h_cm`, `volume_cm3` | 실측 | 추정 |
