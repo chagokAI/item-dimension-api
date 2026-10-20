@@ -18,7 +18,7 @@ cp ../item-dimension-training/outputs/* app/data/
 | `roi.json` | cam별 물체가 놓이는 영역 (원본 1920x1080 좌표) | `{"1": [x0, y0, x1, y1], "2": [...], "3": [...]}` → `roi.example.json` |
 | `product_db.npz` | 등록 상품 사진 임베딩 | `embeddings`: float32 (N, 384), L2 정규화 / `product_index`: int (N,) → products.json의 인덱스 |
 | `products.json` | 등록 상품 정보 | `[{"kan_code", "name", "barcode", "dims_cm": [w, d, h] 내림차순}]` → `products.example.json` |
-| `holdout.json` | 테스트용으로 일부러 등록하지 않은 상품 ID | `["<KAN>_<바코드>", ...]` → `holdout.example.json` (서버는 읽지 않음) |
+| `holdout.json` | 테스트용으로 일부러 등록하지 않은 상품 ID (기본은 빈 목록) | `["<KAN>_<바코드>", ...]` → `holdout.example.json` (서버는 읽지 않음) |
 | `volume_model.joblib` | 처음 보는 물품 치수 추정 모델 | scikit-learn `MultiOutputRegressor(HistGradientBoostingRegressor)`, 입력 21개 특징 → log(치수 3개) |
 
 `*.example.json`은 형식을 보여주기 위한 가짜 값입니다.

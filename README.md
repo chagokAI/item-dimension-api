@@ -129,14 +129,14 @@ curl -X POST http://localhost:8000/measure \
 | `roi.json` | ① | cam별 물체가 놓이는 바닥 영역 |
 | `product_db.npz` | ③ | 등록 상품 사진 임베딩 (상품당 6장 x 384차원) |
 | `products.json` | ④ | 등록 상품 정보: KAN, 상품명, 바코드, 실측 치수 |
-| `holdout.json` | (테스트용) | 일부러 등록하지 않은 상품 목록 |
+| `holdout.json` | (테스트용) | 일부러 등록하지 않은 상품 목록 (기본은 빈 목록) |
 | `volume_model.joblib` | ⑤ | 처음 보는 물품 치수 추정 모델 |
 
-현재 등록 상품: AI Hub Sample 입고물품 40종 중 35종 (5종은 "처음 보는 물품" 테스트용으로 미등록)
+현재 등록 상품: AI Hub Sample 입고물품 40종 전부
 
 ---
 
-## 5. 성능 (Sample 40종 x 2 shot = 80건)
+## 5. 성능 (Sample 40종 x 2 shot = 80건, 평가 시 35종 등록 / 5종 미등록으로 나눠 측정)
 
 | 항목 | 결과 |
 |---|---|
