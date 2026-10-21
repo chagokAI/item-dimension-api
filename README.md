@@ -55,6 +55,30 @@ python3 -m venv .venv
 - 등록 물품 판정 임계값: `KNOWN_THRESHOLD` 환경변수 (기본 0.80)
 - API 문서: `http://localhost:8000/docs`
 
+### 2-3. Kafka Worker 실행 (차곡 서비스 연동)
+
+차곡 서비스에서는 Spring이 HTTP로 부르지 않고 Kafka로 요청을 보냅니다. Worker가 요청 토픽에서 이미지 경로를 받아 사진을 직접 읽고, 측정 결과를 결과 토픽으로 돌려줍니다. 메시지 형식은 [DL 분석 Kafka 메시지 계약](https://github.com/chagokAI/server/blob/main/chagok/docs/dl-kafka-contract.md)에 있습니다.
+
+```bash
+# Kafka(chagokAI/server의 compose)와 Spring을 먼저 띄운다. 두 토픽은 Spring이 기동할 때 만든다
+.venv/bin/python -m app.worker
+```
+
+| 환경변수 | 기본값 | 설명 |
+|---|---|---|
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka 주소 |
+| `DL_REQUEST_TOPIC` / `DL_RESULT_TOPIC` | `chagok.dl.analysis-request.v1` / `chagok.dl.analysis-result.v1` | 요청·결과 토픽 |
+| `DL_WORKER_GROUP` | `chagok-dl-worker` | Worker를 여러 개 띄워도 같은 값을 써야 요청이 나뉘어 처리됨 |
+| `DL_MAX_ATTEMPTS` / `DL_RETRY_DELAY_SECONDS` | `3` / `2` | 예상하지 못한 추론 오류의 재시도 |
+| `DL_AUTO_OFFSET_RESET` | `earliest` | 그룹의 커밋 위치가 없을 때 시작점 |
+| `DL_BROKER_ADDRESS_FAMILY` | `v4` | 로컬 compose가 IPv4에만 포트를 열어 기본값을 IPv4로 둠. IPv6 브로커면 `any` |
+
+- 요청의 이미지 경로는 Worker가 읽을 수 있어야 합니다. 지금은 Spring과 같은 머신에서 도는 것을 전제로 합니다.
+- 결과 발행 확인을 받은 뒤 요청을 커밋합니다. 발행이 30초 안에 확인되지 않으면 Worker가 오류로 종료되고, 다시 띄우면 그 요청부터 처리합니다.
+- **처음 띄울 때:** 새 그룹은 요청 토픽의 처음부터 읽습니다. 예전 시험 요청이 쌓인 로컬 Kafka라면 그 요청을 모두 다시 분석하게 되므로, 먼저 그룹 위치를 최신으로 옮깁니다.
+  `docker exec chagok-kafka-1 /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --group chagok-dl-worker --topic chagok.dl.analysis-request.v1 --reset-offsets --to-latest --execute`
+- 테스트: `.venv/bin/python -m unittest` (모델·Kafka 없이 요청 처리 규칙만 확인)
+
 ---
 
 ## 3. API

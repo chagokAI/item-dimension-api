@@ -1,29 +1,18 @@
 import io
-import os
 from contextlib import asynccontextmanager
 
-import torch
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from PIL import Image, UnidentifiedImageError
 
-from app.measure import DATA, Measurer
-
-REQUIRED_FILES = ["background_cam1.png", "background_cam2.png", "background_cam3.png", "roi.json",
-                  "product_db.npz", "products.json", "volume_model.joblib"]
+from app.loader import load_measurer
 
 models: dict = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    missing = [f for f in REQUIRED_FILES if not (DATA / f).exists()]
-    if missing:
-        raise RuntimeError(f"app/data/에 모델·데이터 파일이 없습니다: {missing}\n"
-                           "item-dimension-training으로 만든 outputs/를 app/data/로 복사하세요 (app/data/README.md 참고).")
     # 서버 시작 시 한 번만 모델을 메모리에 올린다
-    device = torch.device(os.getenv("DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu"))
-    models["device"] = device
-    models["measure"] = Measurer(device, threshold=float(os.getenv("KNOWN_THRESHOLD", "0.80")))
+    models["device"], models["measure"] = load_measurer()
     yield
     models.clear()
 
