@@ -1,5 +1,7 @@
 # item-dimension-api
 
+[CI/CD 배포 안내](docs/cicd.md) — GitHub Actions, GHCR, SSH 배포 및 롤백.
+
 Inference server that identifies inbound items from 3 camera images and returns their dimensions and volume (FastAPI, DINOv2)
 
 고정 카메라 3대(cam1~3)로 찍은 입고 물품 사진을 받아서
