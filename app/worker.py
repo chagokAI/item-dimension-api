@@ -2,6 +2,7 @@
 
 Spring이 요청 토픽에 이미지 경로 3개를 실어 보내면, Worker가 경로에서 사진을 직접 읽어 측정한다.
 결과(식별 바코드·치수 또는 실패 사유)는 결과 토픽으로 보내고, 박스 선택과 DB 반영은 Spring이 한다.
+결과 발행과 요청 오프셋 커밋은 한 Kafka 트랜잭션으로 확정한다. Worker가 중간에 죽어도 결과는 정확히 한 번만 보인다.
 메시지 형식은 chagokAI/server의 chagok/docs/dl-kafka-contract.md를 따른다.
 
 실행: .venv/bin/python -m app.worker   (Spring을 먼저 띄워 토픽이 만들어진 뒤)
@@ -15,6 +16,9 @@ Spring이 요청 토픽에 이미지 경로 3개를 실어 보내면, Worker가 
 - DL_RETRY_DELAY_SECONDS   기본 2
 - DL_AUTO_OFFSET_RESET     기본 earliest. 그룹의 커밋 위치가 없을 때 시작점. 아래 README의 「처음 띄울 때」 참고
 - DL_BROKER_ADDRESS_FAMILY 기본 v4. 로컬 compose가 IPv4에만 포트를 열기 때문이다. IPv6 브로커면 any
+- DL_GROUP_INSTANCE_ID     Worker마다 다른 고정 이름. 주면 정적 구성원으로 동작해, 같은 이름으로 다시 띄우면 재배정 없이
+                           바로 이어받는다. 두 Worker에 같은 이름을 주면 한쪽이 차단된다
+- DL_SESSION_TIMEOUT_MS    기본 10000. 죽은 Worker를 그룹에서 빼기까지 기다리는 시간(라이브러리 기본 45초)
 - DEVICE, KNOWN_THRESHOLD  HTTP 서버와 같다(app/loader.py)
 """
 import json
@@ -22,10 +26,12 @@ import logging
 import os
 import signal
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
+from confluent_kafka import KafkaException, TopicPartition
 from PIL import Image
 
 SCHEMA_VERSION = 1
@@ -44,6 +50,9 @@ class Settings:
     retry_delay_seconds: float = 2.0
     auto_offset_reset: str = "earliest"
     broker_address_family: str = "v4"
+    group_instance_id: str | None = None
+    session_timeout_ms: int = 10000
+    transaction_timeout_ms: int = 30000
 
     def __post_init__(self):
         # 0 이하이면 추론을 한 번도 시도하지 않아 모든 요청이 처리되지 못한다. 기동 시점에 막는다
@@ -61,6 +70,8 @@ class Settings:
             retry_delay_seconds=float(os.getenv("DL_RETRY_DELAY_SECONDS", cls.retry_delay_seconds)),
             auto_offset_reset=os.getenv("DL_AUTO_OFFSET_RESET", cls.auto_offset_reset),
             broker_address_family=os.getenv("DL_BROKER_ADDRESS_FAMILY", cls.broker_address_family),
+            group_instance_id=os.getenv("DL_GROUP_INSTANCE_ID") or None,
+            session_timeout_ms=int(os.getenv("DL_SESSION_TIMEOUT_MS", cls.session_timeout_ms)),
         )
 
 
@@ -187,43 +198,95 @@ def handle(raw: bytes | None, measure: Callable[[list[Image.Image]], dict], sett
     return request.event_id, message
 
 
-class PublishError(Exception):
-    pass
+def consumer_config(settings: Settings) -> dict:
+    """요청 소비 설정. 오프셋은 결과 트랜잭션이 함께 커밋하므로 자동 커밋을 끈다."""
+    config = {
+        "bootstrap.servers": settings.bootstrap_servers,
+        # 로컬 compose는 Kafka 포트를 IPv4(127.0.0.1)에만 연다. localhost가 IPv6(::1)로 먼저 풀려 연결 실패 로그가
+        # 쌓이므로 기본값을 IPv4로 둔다
+        "broker.address.family": settings.broker_address_family,
+        "group.id": settings.group_id,
+        "enable.auto.commit": False,
+        "auto.offset.reset": settings.auto_offset_reset,
+        # 확정된 트랜잭션의 메시지만 읽는다. 요청은 트랜잭션 없이 발행되므로 그대로 보인다
+        "isolation.level": "read_committed",
+        # 기본 45초면 강제 종료된 Worker의 파티션을 그만큼 아무도 처리하지 못한다(실측). 10초로 줄인다
+        "session.timeout.ms": settings.session_timeout_ms,
+    }
+    if settings.group_instance_id:
+        config["group.instance.id"] = settings.group_instance_id
+    return config
 
 
-def publish(producer, topic: str, key: str, message: dict, timeout: float = 30.0) -> None:
-    """결과를 보내고 브로커 확인까지 기다린다. 확인을 못 받으면 요청 오프셋을 커밋하지 않도록 예외로 알린다."""
-    errors = []
-    producer.produce(topic, key=key.encode("utf-8"),
-                     value=json.dumps(message, ensure_ascii=False).encode("utf-8"),
-                     on_delivery=lambda err, _msg: errors.append(err) if err else None)
-    remaining = producer.flush(timeout)
-    if remaining or errors:
-        raise PublishError(f"결과 발행 실패: eventId={key}, 미전송={remaining}, 오류={errors}")
+def producer_config(settings: Settings) -> dict:
+    """결과 발행 설정. transactional.id가 고정이면 같은 이름으로 다시 뜬 Worker가 죽은 Worker의 미완료 트랜잭션을 끊는다."""
+    instance = settings.group_instance_id or uuid.uuid4().hex
+    return {
+        "bootstrap.servers": settings.bootstrap_servers,
+        "broker.address.family": settings.broker_address_family,
+        "transactional.id": f"{settings.group_id}-{instance}",
+        "enable.idempotence": True,
+        "acks": "all",
+        # 트랜잭션은 발행과 오프셋만 감싼다. 열려 있는 동안 read_committed 소비자가 그 파티션의 뒤 결과를 못 읽으므로
+        # 짧게 끝내고, Worker가 멈춘 경우에도 30초 안에 브로커가 중단시킨다
+        "transaction.timeout.ms": settings.transaction_timeout_ms,
+    }
+
+
+def process(msg, consumer, producer, measure: Callable[[list[Image.Image]], dict], settings: Settings,
+            sleep: Callable[[float], None] = time.sleep) -> None:
+    """요청 1건을 처리하고 결과 발행과 다음 오프셋 커밋을 한 트랜잭션으로 확정한다.
+
+    추론은 트랜잭션 밖에서 끝낸다. 트랜잭션이 중단되면 결과는 소비자에게 보이지 않고 오프셋도 그대로라,
+    같은 요청 위치로 되돌려 다시 처리한다. 결과가 두 번 확정되는 일은 생기지 않는다.
+    """
+    out = handle(msg.value(), measure, settings, sleep)
+    producer.begin_transaction()
+    try:
+        if out is not None:
+            key, message = out
+            producer.produce(settings.result_topic, key=key.encode("utf-8"),
+                             value=json.dumps(message, ensure_ascii=False).encode("utf-8"))
+        producer.send_offsets_to_transaction(
+            [TopicPartition(msg.topic(), msg.partition(), msg.offset() + 1)], consumer.consumer_group_metadata())
+        _commit(producer)
+    except KafkaException as e:
+        error = e.args[0]
+        # 일시 오류(코디네이터 이동 등)는 중단 요구 표시 없이 올 수 있다. 중단하고 다시 처리하면 되므로 Worker를 멈추지 않는다
+        if error.fatal() or not (error.txn_requires_abort() or error.retriable()):
+            raise
+        log.warning("결과 트랜잭션 중단, 같은 요청을 다시 처리한다: offset=%s, cause=%s", msg.offset(), error)
+        producer.abort_transaction()
+        try:
+            consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
+        except KafkaException as seek_error:
+            # 재배정으로 이 파티션을 잃었다. 새 담당 Worker가 커밋된 위치, 즉 이 요청부터 다시 처리한다
+            log.warning("파티션을 잃어 되감지 않는다: partition=%s, cause=%s", msg.partition(), seek_error.args[0])
+        return
+    if out is not None:
+        log.info("결과 확정: eventId=%s, outcome=%s, reason=%s, latencyMs=%s", out[0], out[1]["outcome"],
+                 out[1]["failureReason"], out[1]["latencyMs"])
+
+
+def _commit(producer) -> None:
+    # 일시 오류(시간 초과 등)는 같은 트랜잭션의 커밋을 다시 시도하면 된다. 중단이 필요한 오류는 호출자가 처리한다
+    while True:
+        try:
+            producer.commit_transaction()
+            return
+        except KafkaException as e:
+            if not e.args[0].retriable():
+                raise
+            log.warning("결과 트랜잭션 커밋 재시도: %s", e.args[0])
 
 
 def run(settings: Settings, measure: Callable[[list[Image.Image]], dict]) -> None:
     from confluent_kafka import Consumer, Producer
 
-    # 결과 발행 확인 → 요청 커밋 순서로 처리한다. 중간에 죽으면 커밋되지 않은 요청을 다시 처리하므로(최소 1회),
-    # 같은 결과가 두 번 갈 수 있다. Spring이 PENDING인 작업만 반영해 중복을 걸러 낸다
-    # 로컬 compose는 Kafka 포트를 IPv4(127.0.0.1)에만 연다. localhost가 IPv6(::1)로 먼저 풀려 연결 실패 로그가
-    # 쌓이므로 기본값을 IPv4로 둔다
-    common = {"bootstrap.servers": settings.bootstrap_servers,
-              "broker.address.family": settings.broker_address_family}
-    consumer = Consumer({
-        **common,
-        "group.id": settings.group_id,
-        "enable.auto.commit": False,
-        "auto.offset.reset": settings.auto_offset_reset,
-    })
-    producer = Producer({
-        **common,
-        "acks": "all",
-        "enable.idempotence": True,
-        # 기본값(5분) 대신 30초 안에 실패를 드러낸다. 그동안 요청 처리가 멈추기 때문이다
-        "delivery.timeout.ms": 30000,
-    })
+    consumer = Consumer(consumer_config(settings))
+    producer = Producer(producer_config(settings))
+    # 같은 transactional.id의 이전 트랜잭션이 열려 있으면 여기서 끊는다(좀비 차단)
+    producer.init_transactions()
     stopping = False
 
     def stop(signum, _frame):
@@ -234,8 +297,8 @@ def run(settings: Settings, measure: Callable[[list[Image.Image]], dict]) -> Non
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     consumer.subscribe([settings.request_topic])
-    log.info("Worker 시작: request=%s, result=%s, group=%s", settings.request_topic, settings.result_topic,
-             settings.group_id)
+    log.info("Worker 시작: request=%s, result=%s, group=%s, instance=%s", settings.request_topic, settings.result_topic,
+             settings.group_id, settings.group_instance_id or "동적")
     try:
         while not stopping:
             msg = consumer.poll(1.0)
@@ -244,16 +307,9 @@ def run(settings: Settings, measure: Callable[[list[Image.Image]], dict]) -> Non
             if msg.error():
                 log.warning("Kafka 수신 오류: %s", msg.error())
                 continue
-            out = handle(msg.value(), measure, settings)
-            if out is not None:
-                key, message = out
-                publish(producer, settings.result_topic, key, message)
-                log.info("결과 발행: eventId=%s, outcome=%s, reason=%s, latencyMs=%s", key, message["outcome"],
-                         message["failureReason"], message["latencyMs"])
-            consumer.commit(message=msg, asynchronous=False)
+            process(msg, consumer, producer, measure, settings)
     finally:
         consumer.close()
-        producer.flush(10)
 
 
 def main() -> None:
