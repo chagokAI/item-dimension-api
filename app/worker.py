@@ -34,6 +34,8 @@ from typing import Callable
 from confluent_kafka import KafkaException, TopicPartition
 from PIL import Image
 
+from app.healthcheck import HEALTH_FILE, heartbeat
+
 SCHEMA_VERSION = 1
 CAMERA_COUNT = 3
 
@@ -302,6 +304,7 @@ def run(settings: Settings, measure: Callable[[list[Image.Image]], dict]) -> Non
     try:
         while not stopping:
             msg = consumer.poll(1.0)
+            heartbeat(bool(consumer.assignment()) and (msg is None or not msg.error()))
             if msg is None:
                 continue
             if msg.error():
@@ -309,11 +312,13 @@ def run(settings: Settings, measure: Callable[[list[Image.Image]], dict]) -> Non
                 continue
             process(msg, consumer, producer, measure, settings)
     finally:
+        HEALTH_FILE.unlink(missing_ok=True)
         consumer.close()
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    HEALTH_FILE.unlink(missing_ok=True)
     from app.loader import load_measurer
 
     device, measurer = load_measurer()

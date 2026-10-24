@@ -1,0 +1,9 @@
+.git
+.env
+.env.*
+.venv
+**/__pycache__
+data
+app/data/*
+!app/data/README.md
+tests
