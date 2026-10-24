@@ -74,7 +74,8 @@ for camera in (1, 2, 3):
     Image.new("RGB", (8, 8)).save(path)
     refs.append(path)
 producer = Producer({"bootstrap.servers": "kafka:9092"})
-consumer = Consumer({"bootstrap.servers": "kafka:9092", "group.id": "ci-result-check", "auto.offset.reset": "earliest", "enable.auto.commit": False})
+consumer = Consumer({"bootstrap.servers": "kafka:9092", "group.id": "ci-result-check", "auto.offset.reset": "earliest",
+                     "enable.auto.commit": False, "isolation.level": "read_committed"})
 consumer.subscribe(["ci.results"])
 for event, images in [("ci-measured", refs), ("ci-unreadable", ["/does/not/exist"] * 3)]:
     producer.produce("ci.requests", key=event, value=json.dumps({"schemaVersion": 1, "eventId": event, "warehouseId": "ci-warehouse", "imageRefs": images}))
