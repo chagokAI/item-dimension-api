@@ -68,16 +68,19 @@ python3 -m venv .venv
 |---|---|---|
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka 주소 |
 | `DL_REQUEST_TOPIC` / `DL_RESULT_TOPIC` | `chagok.dl.analysis-request.v1` / `chagok.dl.analysis-result.v1` | 요청·결과 토픽 |
-| `DL_WORKER_GROUP` | `chagok-dl-worker` | Worker를 여러 개 띄워도 같은 값을 써야 요청이 나뉘어 처리됨 |
+| `DL_WORKER_GROUP` | `chagok-dl-worker` | Worker를 여러 개 띄워도 같은 값을 써야 요청이 나뉘어 처리됨. 요청 토픽 파티션(3개)보다 많은 Worker는 놀고, 2개면 파티션이 2:1로 나뉘어 처리량이 1.36배에 그친다(실측) |
 | `DL_MAX_ATTEMPTS` / `DL_RETRY_DELAY_SECONDS` | `3` / `2` | 예상하지 못한 추론 오류의 재시도 |
 | `DL_AUTO_OFFSET_RESET` | `earliest` | 그룹의 커밋 위치가 없을 때 시작점 |
 | `DL_BROKER_ADDRESS_FAMILY` | `v4` | 로컬 compose가 IPv4에만 포트를 열어 기본값을 IPv4로 둠. IPv6 브로커면 `any` |
+| `DL_GROUP_INSTANCE_ID` | 없음 | Worker마다 다른 고정 이름. 주면 정적 구성원으로 동작해 같은 이름으로 다시 띄울 때 재배정 없이 바로 이어받는다. 같은 이름을 두 Worker에 주면 한쪽이 차단된다. 정적 구성원은 정상 종료해도 그룹을 바로 떠나지 않아, 다른 이름으로 교체하면 `DL_SESSION_TIMEOUT_MS` 동안 그 파티션이 멈춘다 |
+| `DL_SESSION_TIMEOUT_MS` | `10000` | 죽은 Worker를 그룹에서 빼기까지 기다리는 시간. 라이브러리 기본 45초에서는 강제 종료 후 그만큼 처리가 멈췄다(실측) |
 
 - 요청의 이미지 경로는 Worker가 읽을 수 있어야 합니다. 지금은 Spring과 같은 머신에서 도는 것을 전제로 합니다.
-- 결과 발행 확인을 받은 뒤 요청을 커밋합니다. 발행이 30초 안에 확인되지 않으면 Worker가 오류로 종료되고, 다시 띄우면 그 요청부터 처리합니다.
+- 결과 발행과 요청 오프셋 커밋을 한 Kafka 트랜잭션으로 확정합니다(`transactional.id` = 그룹 + 인스턴스 이름). Worker가 중간에 죽으면 트랜잭션이 중단되어 그 결과는 소비자에게 보이지 않고, 다시 띄우면 그 요청부터 처리합니다. 결과는 정확히 한 번만 보입니다. 요청·결과 소비자는 `read_committed`로 읽습니다.
+- 단일 브로커에서는 트랜잭션 상태 로그 복제 계수를 1로 낮춰야 합니다(`KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1`, `KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1`). chagokAI/server의 compose는 이미 그렇게 되어 있습니다. 낮추지 않으면 Worker가 기동 시 트랜잭션 초기화에서 멈춥니다.
 - **처음 띄울 때:** 새 그룹은 요청 토픽의 처음부터 읽습니다. 예전 시험 요청이 쌓인 로컬 Kafka라면 그 요청을 모두 다시 분석하게 되므로, 먼저 그룹 위치를 최신으로 옮깁니다.
   `docker exec chagok-kafka-1 /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --group chagok-dl-worker --topic chagok.dl.analysis-request.v1 --reset-offsets --to-latest --execute`
-- 테스트: `.venv/bin/python -m unittest` (모델·Kafka 없이 요청 처리 규칙만 확인)
+- 테스트: `.venv/bin/python -m pytest -q` (모델·Kafka 없이 요청 처리 규칙과 트랜잭션 순서를 확인)
 
 ---
 
