@@ -1,4 +1,4 @@
-# 차곡 비전
+# Chagok Vision
 
 Multi-camera vision for item recognition and dimension estimation.
 
